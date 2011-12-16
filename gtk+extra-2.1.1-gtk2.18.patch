@@ -1,0 +1,149 @@
+diff --git a/gtkextra/gtkitementry.c b/gtkextra/gtkitementry.c
+index 6a42880..377c4ea 100644
+--- a/gtkextra/gtkitementry.c
++++ b/gtkextra/gtkitementry.c
+@@ -170,6 +170,26 @@ static void         get_widget_window_size             (GtkEntry       *entry,
+ 
+ static GtkEntryClass *parent_class = NULL;
+ 
++#ifdef GTK_TYPE_ENTRY_BUFFER
++// In GTK+ 2.18, changes were made to GtkEntry. This caused gtk+extra
++// to crash. So from 2.18 call the appropriate buffer routines in GTK+
++// gtk/gtkentrybuffer.c. 
++//
++// rrankin AT ihug DOT com DOT au 21/12/09
++//
++typedef struct _GtkEntryPrivate GtkEntryPrivate;
++
++struct _GtkEntryPrivate
++{
++  GtkEntryBuffer* buffer;
++  // The remainder of this structure has been truncated 
++
++};
++
++#define GTK_ENTRY_GET_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE ((obj), GTK_TYPE_ENTRY, GtkEntryPrivate))
++
++#endif
++
+ GtkType
+ gtk_item_entry_get_type (void)
+ {
+@@ -670,6 +690,27 @@ gtk_entry_get_position (GtkEditable *editable)
+   return GTK_ENTRY (editable)->current_pos;
+ }
+ 
++#ifdef GTK_TYPE_ENTRY_BUFFER
++//
++// Get_buffer copied from gtk/gtkentry.c
++//
++static GtkEntryBuffer*
++get_buffer (GtkEntry *entry)
++{
++  GtkEntryPrivate *priv = GTK_ENTRY_GET_PRIVATE (entry);
++
++  if (priv->buffer == NULL)
++    {
++      GtkEntryBuffer *buffer;
++      buffer = gtk_entry_buffer_new (NULL, 0);
++      gtk_entry_set_buffer (entry, buffer);
++      g_object_unref (buffer);
++    }
++
++  return priv->buffer;
++}
++
++#endif //GTK_TYPE_ENTRY_BUFFER
+ 
+ /* Default signal handlers
+  */
+@@ -679,7 +720,6 @@ gtk_entry_real_insert_text (GtkEditable *editable,
+ 			    gint         new_text_length,
+ 			    gint        *position)
+ {
+-  gint index;
+   gint n_chars;
+ 
+   GtkItemEntry *ientry = GTK_ITEM_ENTRY (editable);
+@@ -696,6 +736,11 @@ gtk_entry_real_insert_text (GtkEditable *editable,
+       new_text_length = g_utf8_offset_to_pointer (new_text, n_chars) - new_text;
+     }
+ 
++#ifdef GTK_TYPE_ENTRY_BUFFER
++   GtkEntryBuffer *buffer = get_buffer(entry);
++   n_chars  = gtk_entry_buffer_insert_text(buffer, *position, new_text, new_text_length);
++#else
++
+   if (new_text_length + ientry->item_n_bytes + 1 > ientry->item_text_size)
+     {
+       while (new_text_length + ientry->item_n_bytes + 1 > ientry->item_text_size)
+@@ -724,10 +769,12 @@ gtk_entry_real_insert_text (GtkEditable *editable,
+       entry->text = g_realloc (entry->text, ientry->item_text_size);
+     }
+ 
++  gint index;
+   index = g_utf8_offset_to_pointer (entry->text, *position) - entry->text;
+ 
+   g_memmove (entry->text + index + new_text_length, entry->text + index, ientry->item_n_bytes - index);
+   memcpy (entry->text + index, new_text, new_text_length);
++#endif //GTK_TYPE_ENTRY_BUFFER
+ 
+   ientry->item_n_bytes += new_text_length;
+   entry->text_length += n_chars;
+@@ -755,7 +802,6 @@ gtk_entry_real_delete_text (GtkEditable *editable,
+ 			    gint         end_pos)
+ {
+   GtkEntry *entry = GTK_ENTRY (editable);
+-  GtkItemEntry *ientry = GTK_ITEM_ENTRY (editable);
+ 
+   if (start_pos < 0)
+     start_pos = 0;
+@@ -764,6 +810,11 @@ gtk_entry_real_delete_text (GtkEditable *editable,
+   
+   if (start_pos < end_pos)
+     {
++#ifdef GTK_TYPE_ENTRY_BUFFER
++      GtkEntryBuffer *buffer = get_buffer(entry);
++      gtk_entry_buffer_delete_text (buffer, start_pos, end_pos-start_pos);
++#else
++      GtkItemEntry *ientry = GTK_ITEM_ENTRY (editable);
+       gint start_index = g_utf8_offset_to_pointer (entry->text, start_pos) - entry->text;
+       gint end_index = g_utf8_offset_to_pointer (entry->text, end_pos) - entry->text;
+ 
+@@ -776,6 +827,7 @@ gtk_entry_real_delete_text (GtkEditable *editable,
+ 
+       if (entry->selection_bound > start_pos)
+ 	entry->selection_bound -= MIN (entry->selection_bound, end_pos) - start_pos;
++#endif // GTK_TYPE_ENTRY_BUFFER
+       /* We might have deleted the selection
+        */
+       gtk_entry_update_primary_selection (entry);
+@@ -863,6 +915,7 @@ gtk_entry_move_cursor (GtkEntry       *entry,
+ 	case GTK_MOVEMENT_DISPLAY_LINES:
+ 	case GTK_MOVEMENT_PARAGRAPHS:
+ 	case GTK_MOVEMENT_PAGES:
++	case GTK_MOVEMENT_HORIZONTAL_PAGES:
+ 	  break;
+ 	}
+     }
+@@ -896,6 +949,7 @@ gtk_entry_move_cursor (GtkEntry       *entry,
+ 	case GTK_MOVEMENT_DISPLAY_LINES:
+ 	case GTK_MOVEMENT_PARAGRAPHS:
+ 	case GTK_MOVEMENT_PAGES:
++	case GTK_MOVEMENT_HORIZONTAL_PAGES:
+ 	  break;
+ 	}
+     }
+diff --git a/gtkextra/gtksheet.c b/gtkextra/gtksheet.c
+index 10ab5f0..d3d96e3 100644
+--- a/gtkextra/gtksheet.c
++++ b/gtkextra/gtksheet.c
+@@ -6951,7 +6951,7 @@ draw_xor_rectangle(GtkSheet *sheet, GtkSheetRange range)
+ 
+    gdk_gc_set_clip_rectangle(sheet->xor_gc, &clip_area);
+ 
+-   for(i=-1;i<=1;i=++i)
++   for(i=-1;i<=1;i++)
+      gdk_draw_rectangle(sheet->sheet_window,
+                         sheet->xor_gc,
+ 		        FALSE,
